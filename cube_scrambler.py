@@ -1,5 +1,8 @@
 import enum
 import random
+from collections import deque
+
+import argparse
 
 class MoveName(enum.Enum):
     FRONT = 'F'
@@ -28,24 +31,56 @@ class MoveSequence:
     def are_opposite(move1, move2):
         return (move1[0] == move2[0]) and (len(move1) != len(move2))
 
-    def generate_next_move(previous: str):
+    def is_three_quarter_turn(move1, move2, move3):
+        return move1 == move2 and move2 == move3
+
+    def is_full_turn(move1, move2, move3, move4):
+        return move1 == move2 and move2 == move3 and move3 == move4
+
+    def should_reroll(move: str, previous_moves: deque, no_half_turns=False) -> bool:
+        previous_length = len(previous_moves)
+        # No previous moves
+        if previous_length < 1:
+            return False
+        # Is last move the same? (if no half move option is activated)
+        previous = previous_moves[-1]
+        if no_half_turns and (move == previous):
+            return True
+        # Is last move the opposite?
+        if MoveSequence.are_opposite(move, previous):
+            return True
+        # If there are two previous moves: are these all the same? (to prevent three quarter turns)
+        if previous_length < 2:
+            return False
+        previous2 = previous_moves[-2]
+        if MoveSequence.is_three_quarter_turn(move, previous, previous2):
+            return True
+        # If there are three previous moves: are these all the same? (to prevent full turns)
+        if previous_length < 3:
+            return False
+        previous3 = previous_moves[-3]
+        return MoveSequence.is_full_turn(move, previous, previous2, previous3)
+
+    def generate_next_move(previous_moves: deque, no_half_turns=False):
         move = MoveSequence.pick_a_move_name() + MoveSequence.invert_or_not()
-        if MoveSequence.are_opposite(previous, move):
-            return MoveSequence.generate_next_move(previous)
+        if MoveSequence.should_reroll(move, previous_moves, no_half_turns):
+            return MoveSequence.generate_next_move(previous_moves, no_half_turns)
         return move
 
-    def generate_sequence(length: int) -> list:
+    def generate_sequence(length: int, no_half_turns=False) -> list:
+        if length <= 0:
+            return []
         move = MoveSequence.generate_move()
         sequence = [move]
-        previous = move
-        for _ in range(length):
-            move = MoveSequence.generate_next_move(previous)
+        previous_moves = deque([move], maxlen=3)
+        for _ in range(length - 1):
+            move = MoveSequence.generate_next_move(previous_moves, no_half_turns)
             sequence.append(move)
-            previous = move
+            previous_moves.append(move)
         return sequence
 
-    def __init__(self, length: int):
-        self.sequence = MoveSequence.generate_sequence(length)
+    def __init__(self, length: int, no_half_turns=False):
+        self.sequence = MoveSequence.generate_sequence(length, no_half_turns)
 
     def __str__(self):
         return ', '.join(self.sequence)
@@ -53,17 +88,25 @@ class MoveSequence:
 if __name__ == "__main__":
     # https://arxiv.org/html/2410.20630v1
     # https://math.stackexchange.com/questions/816055/minimum-number-of-random-moves-needed-to-uniformly-scramble-a-rubiks-cube
-    print(MoveSequence(26))
+    DEFAULT_LENGTH = 25
+
+    parser = argparse.ArgumentParser(
+        description="Generates a random sequence of moves to scramble a Rubik's cube.")
+    parser.add_argument(
+        '-l', '--length', 
+        type=int, default=DEFAULT_LENGTH, 
+        help="Sequence length. If not given, the script has a default value.")
+    parser.add_argument(
+        '--no-half-turns', 
+        action="store_true", 
+        help="Prevents half turns in the sequence.")
+    args = parser.parse_args()
+
+    print(MoveSequence(length=args.length, no_half_turns=args.no_half_turns))
 
 # https://shuffle.akselipalen.com/
 
 # ---
-# Ideas:
-# Prevent three identical quarter moves and full turns.
-# Script options:
-# --length, -l <number> Sequence length, if not given, the script has a default value.
-# --no-half-turns Prevents half turns in the sequence.
-
 # Further ideas
 # Backend program that simulates Rubik's cube state. Move => updates state.
 # Frontend program to vizualize it.
