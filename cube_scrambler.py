@@ -5,18 +5,29 @@ from collections import deque
 import argparse
 
 
+# ----- Move module -----
+
+# Notes about naming:
+# "move name", "face name" or "face": the one-character name of a cube face
+# "move" or "face move": a cube move like R', L2 or U
+
+# Move are arranged so that opposites are "face to face modulo 3"
 class MoveName(enum.Enum):
+
     FRONT = 'F'
-    BACK = 'B'
     RIGHT = 'R'
-    LEFT = 'L'
     UP = 'U'
+
+    BACK = 'B'
+    LEFT = 'L'
     DOWN = 'D'
 
 INVERSION = "'"
 
 MOVE_NAMES = [move.value for move in MoveName]
 MOVE_NAMES_COUNT = len(MOVE_NAMES)
+MOVE_NAME_INDEX = {MOVE_NAMES[i]: i for i in range(MOVE_NAMES_COUNT)}
+
 
 def pick_a_move_name():
     return MOVE_NAMES[random.randrange(0, MOVE_NAMES_COUNT)]
@@ -33,38 +44,69 @@ def get_move_name(move) -> str:
 def have_same_name(move1, move2):
     return get_move_name(move1) == get_move_name(move2)
 
-def have_same_direction(move1, move2):
-    """Direction means clockwise vs. counterclockwise."""
-    return len(move1) == len(move2)
+def get_direction(move):
+    """
+    Returns 1 for a clockwise move, -1 for a counterclockwise move.
+    Note: this function implementation doesn't support with half moves.
+    """
+    return 1 if len(move) == 1 else -1
 
-def should_reroll(move: str, previous_moves: deque, constraints: Constraints) -> bool:
-    # If true random option, never reroll
+def are_opposite(move1, move2):
+    """
+    Returns true if both moves cancel each other out.
+    Note: this function implementation doesn't support with half moves.
+    """
+    return have_same_name(move1, move2) and (get_direction(move1) != get_direction(move2))
+
+def do_commute(move1, move2):
+    name1 = get_move_name(move1)
+    name2 = get_move_name(move2)
+    return name1 == name2 or ((MOVE_NAME_INDEX[name1] % 3) == (MOVE_NAME_INDEX[name2] % 3))
+
+
+# ----- Move sequence module -----
+
+def count_repeat(move: str, previous_moves: deque):
+    """
+    Counts how many time the move is repeated in the previous moves.
+    If previous moves contain a non-commutative move with the given move, 
+    moves prior that are not counted.
+    """
+    result = 0
+    for previous in reversed(previous_moves):
+        if not do_commute(move, previous):
+            return result
+        if previous == move:
+            result += 1
+    return result
+
+def contains_opposite(move: str, previous_moves: deque):
+    for previous in reversed(previous_moves):
+        if not do_commute(move, previous):
+            return False
+        if are_opposite(move, previous):
+            return True
+    return False
+
+def _should_reroll(move: str, previous_moves: deque, constraints: Constraints) -> bool:
     if constraints.true_random:
         return False
-    # No previous moves
     previous_length = len(previous_moves)
     if previous_length < 1:
         return False
-    # Is last move the same? (if no half move option is activated)
-    previous = previous_moves[-1]
-    have_same_name_as_previous = have_same_name(move, previous)
-    have_same_direction_as_previous = have_same_direction(move, previous)
-    is_same_as_previous = have_same_name_as_previous and have_same_direction_as_previous
-    if constraints.no_half_turns and is_same_as_previous:
+    repeat_count = count_repeat(move, previous_moves)
+    if constraints.no_half_turns and repeat_count >= 1:
         return True
-    # Is last move the opposite?
-    if have_same_name_as_previous and not have_same_direction_as_previous:
+    if contains_opposite(move, previous_moves):
         return True
-    # If there are two previous moves: are these all the same? (to prevent three quarter turns or more)
     if previous_length < 2:
         return False
-    previous2 = previous_moves[-2]
-    return is_same_as_previous and (previous == previous2)
+    return repeat_count >= 2
 
-def generate_next_move(previous_moves: deque, constraints: Constraints):
+def _generate_next_move(previous_moves: deque, constraints: Constraints):
     move = pick_a_move_name() + invert_or_not()
-    if should_reroll(move, previous_moves, constraints):
-        return generate_next_move(previous_moves, constraints)
+    if _should_reroll(move, previous_moves, constraints):
+        return _generate_next_move(previous_moves, constraints)
     return move
 
 def generate_sequence(length: int, constraints: Constraints) -> list:
@@ -72,9 +114,9 @@ def generate_sequence(length: int, constraints: Constraints) -> list:
         return []
     move = generate_move()
     sequence = [move]
-    previous_moves = deque([move], maxlen=3)
+    previous_moves = deque([move], maxlen=4)
     for _ in range(length - 1):
-        move = generate_next_move(previous_moves, constraints)
+        move = _generate_next_move(previous_moves, constraints)
         sequence.append(move)
         previous_moves.append(move)
     return sequence
@@ -94,12 +136,49 @@ class Constraints:
 
 class MoveSequence:
 
-    def __init__(self, length: int, constraints: Constraints, condensed_notation: bool):
+    STANDARD_LENGTH = 26
+
+    def __init__(self, length: int, constraints: Constraints):
         self.sequence = generate_sequence(length, constraints)
-        self.condensed_notation = condensed_notation
+
+    def __len__(self):
+        return len(self.sequence)
 
     def __str__(self):
-        return ', '.join(self.condensed_sequence() if self.condensed_notation else self.sequence)
+        return ', '.join(self.sequence)
+
+    def print_raw(self):
+        print(self.__str__())
+
+    def print_condensed(self):
+        print(', '.join(self.condensed_sequence()))
+
+    # Inner methods serve to create the condensed sequence
+
+    @staticmethod
+    def half_turn_suffix(reduced_half_turns: int) -> str:
+        match reduced_half_turns:
+            case 1: return ''
+            case 2: return '2'
+            case 3: return INVERSION
+            case _: raise ValueError(f"Unexpected reduced half turn count: {reduced_half_turns}")
+
+    @staticmethod
+    def condensed_chain(move_chain: list):
+        """
+        Condenses a list of moves (that are supposed to be commutative).
+        """
+        if len(move_chain) == 1:
+            yield move_chain.pop()
+        move_count = {}
+        for move in move_chain:
+            move_name = get_move_name(move)
+            move_count[move_name] = move_count.get(move_name, 0) + get_direction(move)
+        for move_name, half_turn_count in move_count.items():
+            reduced_half_turns = half_turn_count % 4
+            if reduced_half_turns == 0:
+                continue
+            yield move_name + MoveSequence.half_turn_suffix(reduced_half_turns)
 
     def condensed_sequence(self) -> list:
         sequence_copy = self.sequence[:]
@@ -107,34 +186,30 @@ class MoveSequence:
         while sequence_copy:
             move = sequence_copy.pop(0)
             move_chain = [move]
-            while sequence_copy and sequence_copy[0] == move:
+            while sequence_copy and do_commute(sequence_copy[0], move):
                 move_chain.append(sequence_copy.pop(0))
-            chain_length = len(move_chain)
-            if chain_length == 1:
-                result.append(move)
-            else:
-                if chain_length % 2 == 0:
-                    result.append(get_move_name(move) + str(chain_length))
-                else:
-                    result.append(move + str(chain_length))
+            for condensed in MoveSequence.condensed_chain(move_chain):
+                result.append(condensed)
         return result
 
 
-if __name__ == "__main__":
-    # https://arxiv.org/html/2410.20630v1
-    # https://math.stackexchange.com/questions/816055/minimum-number-of-random-moves-needed-to-uniformly-scramble-a-rubiks-cube
-    DEFAULT_LENGTH = 26
+# ----- CLI module -----
 
+def parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generates a random sequence of moves to scramble a Rubik's cube.")
     parser.add_argument(
         '-l', '--length', 
-        type=int, default=DEFAULT_LENGTH, 
+        type=int, default=MoveSequence.STANDARD_LENGTH, 
         help="Sequence length. If not given, the script has a default value.")
     parser.add_argument(
         '-c', '--condensed-notation',
         action="store_true",
-        help="Prints U2 instead of U, U for instance.")
+        help="Shows the move sequence in condensed notation. Activated by default.")
+    parser.add_argument(
+        '-r', '--raw-moves',
+        action="store_true",
+        help="Shows raw quarter moves.")
     parser.add_argument(
         '--no-half-turns', 
         action="store_true", 
@@ -147,37 +222,21 @@ if __name__ == "__main__":
         '-N',
         type=int, default=1, 
         help="Number of sequences to print (defaults to 1).")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+def should_print_raw(args):
+    return args.raw_moves
+
+def should_print_condensed(args):
+    return args.condensed_notation or not args.raw_moves
+
+if __name__ == "__main__":
+    args = parse_cli_args()
     constraints = Constraints(args.no_half_turns, args.true_random)
     for _ in range(args.N):
-        print(MoveSequence(args.length, constraints, args.condensed_notation))
-
-# https://shuffle.akselipalen.com/
-
-# ---
-# Further ideas
-# Backend program that simulates Rubik's cube state. Move => updates state.
-# Frontend program to vizualize it.
-
-"""
-Use cases:
-- Text input => generated sequence in format like "F, U, R, U', R', F'"
-- Button "Apply" => applies the moves on screen
-- Sliders to vary move speed, time between moves
-
-Smart use case:
-- What should be my next move? / Hint, based on the official Rubik's solving guide.
-
-Note:
-- 20 = "God's number". Any state can be reached from any state in 20 quarter or half moves.
-- It's 26 if half moves are counted as two quarter moves.
-
-> The term "devil's algorithm" describes a move sequence which, during execution, 
-> will go through all possible 43,252,003,274,489,856,000 states of the 3x3x3 Rubik's 
-> cube without visiting any state more than once. 
-> That is, every possible state will be equally likely when executing the sequence.
-
-Questions:
-Are there resources that gives a fast-solving sequence from any cube state?
-"""
+        move_sequence = MoveSequence(args.length, constraints)
+        if should_print_raw(args):
+            move_sequence.print_raw()
+        if should_print_condensed(args):
+            move_sequence.print_condensed()
+        print('')
